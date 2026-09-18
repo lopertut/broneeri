@@ -1,12 +1,8 @@
 import { useState, useEffect } from 'react';
-import { loadStripe } from '@stripe/stripe-js';
 import pb from './lib/pocketbase';
 
-// Initialize Stripe outside component render
-const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
-
 export default function App() {
-  const [user, setUser] = useState(pb.authStore.model);
+  const [user, setUser] = useState(pb.authStore.record || pb.authStore.model);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isRegister, setIsRegister] = useState(false);
   
@@ -42,12 +38,13 @@ export default function App() {
   };
 
   useEffect(() => {
-    setUser(pb.authStore.model);
+    const currentUser = pb.authStore.record || pb.authStore.model;
+    setUser(currentUser);
     if (pb.authStore.isValid) {
       fetchBookings();
     }
     return pb.authStore.onChange(() => {
-      const current = pb.authStore.model;
+      const current = pb.authStore.record || pb.authStore.model;
       setUser(current);
       if (current) {
         fetchBookings();
@@ -95,9 +92,11 @@ export default function App() {
     setBookingSuccess('');
 
     try {
+      const currentUser = pb.authStore.record || pb.authStore.model;
+
       // 1. Create booking record in PocketBase
       const bookingData = {
-        user: pb.authStore.model.id,
+        user: currentUser?.id,
         service,
         booking_date: `${date} ${time}:00`,
         car_model: carModel,
@@ -108,41 +107,25 @@ export default function App() {
       const record = await pb.collection('bookings').create(bookingData);
       setBookingSuccess('Broneering edukalt salvestatud!');
 
-      // 2. Request Stripe Checkout Session ID from PocketBase custom endpoint
-      const response = await fetch(`${pb.baseUrl}/api/create-checkout-session`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': pb.authStore.token,
-        },
-        body: JSON.stringify({
-          bookingId: record.id,
-          service: service,
-        }),
-      });
-
-      const session = await response.json();
-
-      if (!response.ok) {
-        throw new Error(session.message || 'Checkout session request failed.');
-      }
-
-      // 3. Redirect to Stripe Checkout using Public Key
-      const stripe = await stripePromise;
-      const { error } = await stripe.redirectToCheckout({
-        sessionId: session.id,
-      });
-
-      if (error) {
-        console.error('Stripe redirect error:', error);
-      }
-
-      // Clear form
+      // Clear form & refresh list
       setService('');
       setDate('');
       setCarModel('');
       setCarNumber('');
       fetchBookings();
+
+      // 2. Build Stripe Payment Link with booking reference ID
+      const stripePaymentLink = import.meta.env.VITE_STRIPE_PAYMENT_LINK;
+      if (stripePaymentLink) {
+        const checkoutUrl = new URL(stripePaymentLink);
+        checkoutUrl.searchParams.set('client_reference_id', record.id);
+        if (currentUser?.email) {
+          checkoutUrl.searchParams.set('prefilled_email', currentUser.email);
+        }
+
+        // Direct browser redirect to Stripe Payment Link
+        window.location.href = checkoutUrl.toString();
+      }
     } catch (err) {
       alert('Viga broneeringu loomisel: ' + err.message);
     } finally {
@@ -306,7 +289,7 @@ export default function App() {
             </form>
           )}
 
-          {/* Kasutaja oma broneeringud */}
+          {/* User bookings */}
           {user && (
             <div className="mt-8 pt-6 border-t border-slate-700/60">
               <div className="flex items-center justify-between mb-4">
